@@ -3,6 +3,16 @@ import speech_recognition as sr
 import openai
 from io import BytesIO
 import subprocess
+import langid
+from zhon import hanzi
+import re
+import cv2
+import torch
+# 导入translators库
+import translators as ts
+
+# 加载预训练模型
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
 
 # 定义一个列表，存储多个api key轮询使用，避免单个key一分钟3次的限制影响
 api_keys = ["sk-xxx1","sk-xxx2"]
@@ -47,6 +57,64 @@ def chat(prompt):
       current_index = (current_index + 1) % len(api_keys)
       return chat(prompt)
 
+# 定义一个函数来检测文本是否具有中文语言意义
+def has_chinese_meaning(text):
+  # 检测文本是否包含中文句子模式
+  if re.search(hanzi.sentence, text):
+    return True
+  lang, confidence = langid.classify(text)
+  if lang == 'zh':
+    return True
+  # 如果都没有，则返回False
+  return False
+
+def getPicThings():
+    # 打开摄像头
+    capture = cv2.VideoCapture(0)
+    set_all = []
+    for i in range(5):
+        cv2.startWindowThread()
+        # 获取一帧图像
+        ret, frame = capture.read()
+
+        # 将图像传入模型进行推理
+        results = model(frame)
+        df = results.pandas().xyxy[0]
+
+        # 过滤噪音
+        df = df[df['name'] != 'person']
+        df = df[df['name'] != 'remote']
+        items = df['name'].tolist()
+        if items:
+            set_all.extend(items)
+    return set(set_all)
+
+# 判断是否要求开启摄像头
+def isShowPic(sayText):
+    trimStr = sayText.replace(" ", "").replace("?", "").replace("？", "")
+    if trimStr == '这是什么' or trimStr == '這是什麼':
+        return True
+    else:
+        return False
+
+
+# 说出摄像头看到的物体名称
+def sayPicThings():
+    things = getPicThings()
+    messages.append({"role": "user", "content": "这是什么"})
+    result_with_delimiter = ''
+    if things:
+        result_with_delimiter = '我看到了'
+        delimiter = '一个'
+        for str in things:
+            result_with_delimiter = result_with_delimiter + delimiter + ts.translate_text(str, to_language="zh")
+    else:
+        result_with_delimiter = '我什么都没看到'
+    messages.append({"role": "assistant", "content": result_with_delimiter})
+    print("AI:", result_with_delimiter)
+    return result_with_delimiter
+
+
 # 获取麦克风
 r = sr.Recognizer()
 mic = sr.Microphone(device_index=0)
@@ -61,10 +129,14 @@ while True:
     sayText = transcribe_audio(audio)
     if sayText:
         print("我说:",sayText)
-        gptText = chat(sayText)
-        subprocess.run(["say", gptText])
+        if has_chinese_meaning(sayText):
+            returnText = ''
+            if isShowPic(sayText):
+                returnText = sayPicThings()
+            else:
+                returnText = chat(sayText)
+            subprocess.run(["say", returnText])
+        else:
+            print("这句话没有具体的意义")
     else:
          print("没有听到任何内容")
-    
-
-
